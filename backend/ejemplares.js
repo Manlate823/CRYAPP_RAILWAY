@@ -215,10 +215,6 @@ module.exports = function createEjemplares(pool) {
       }
 
       if (req.method === 'POST' && !id) {
-        if (free) {
-          const count=await pool.query('SELECT count(*)::int AS total FROM ejemplares WHERE usuario_id=$1',[usuarioId]);
-          if (!canCreate(count.rows[0].total,'free')) return reply(res,403,{error:'Has alcanzado el límite de 25 registros del plan GRATIS',code:'PLAN_LIMIT',limit:25});
-        }
         const data = await readJSON(req);
         const invalid = validateFields(data, true);
         if (invalid) return reply(res, 400, { error: invalid });
@@ -235,11 +231,31 @@ module.exports = function createEjemplares(pool) {
           return value === undefined || value === '' ? null : value;
         });
         const placeholders = fields.map((_, index) => `$${index + 2}`).join(', ');
-        const saved = await pool.query(
-          `INSERT INTO ejemplares (usuario_id, ${fields.join(', ')}) VALUES ($1, ${placeholders}) RETURNING *`,
-          [usuarioId, ...values]
-        );
-        return reply(res, 201, { status: 'ok', ejemplar: saved.rows[0] });
+        // Serializar las creaciones del mismo usuario: dos solicitudes simultáneas
+        // no pueden sobrepasar el límite de 25 del plan gratuito.
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          await client.query('SELECT id FROM usuarios WHERE id=$1 FOR UPDATE',[usuarioId]);
+          if (free) {
+            const count=await client.query('SELECT count(*)::int AS total FROM ejemplares WHERE usuario_id=$1',[usuarioId]);
+            if (!canCreate(count.rows[0].total,'free')) {
+              await client.query('ROLLBACK');
+              return reply(res,403,{error:'Has alcanzado el límite de 25 registros del plan GRATIS',code:'PLAN_LIMIT',limit:25});
+            }
+          }
+          const saved=await client.query(
+            `INSERT INTO ejemplares (usuario_id, ${fields.join(', ')}) VALUES ($1, ${placeholders}) RETURNING *`,
+            [usuarioId,...values]
+          );
+          await client.query('COMMIT');
+          return reply(res,201,{status:'ok',ejemplar:saved.rows[0]});
+        } catch(error) {
+          await client.query('ROLLBACK').catch(()=>{});
+          throw error;
+        } finally {
+          client.release();
+        }
       }
 
       if (req.method === 'DELETE' && id) {
