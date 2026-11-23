@@ -1,6 +1,7 @@
 'use strict';
 
 const jwt = require('jsonwebtoken');
+const {visibleIds,canCreate} = require('./plan-access');
 const fs = require('node:fs/promises');
 const pathModule = require('node:path');
 const { randomUUID } = require('node:crypto');
@@ -157,6 +158,10 @@ module.exports = function createEjemplares(pool) {
       return reply(res, 401, { error: 'Sesion invalida' });
     }
     const usuarioId = usuario.sub;
+    const free = req.cryappPlan === 'free';
+    // Las primeras 25 fichas se determinan de forma estable por fecha e ID.
+    const visibleSql = `SELECT id FROM ejemplares WHERE usuario_id=$1 ORDER BY fecha_registro DESC, id DESC LIMIT 25`;
+    const canAccess = async birdId => !free || (await pool.query(`SELECT 1 FROM (${visibleSql}) visible WHERE id=$2`,[usuarioId,birdId])).rowCount>0;
     if (typeof usuarioId !== 'string' || !UUID_RE.test(usuarioId)) {
       return reply(res, 401, { error: 'Usuario no identificado' });
     }
@@ -175,7 +180,7 @@ module.exports = function createEjemplares(pool) {
       if (req.method === 'POST' && parts.length === 4 && parts[3] === 'foto') {
         if (!UUID_RE.test(parts[2])) return reply(res, 400, {error:'ID invalido'});
         const exists = await pool.query('SELECT id FROM ejemplares WHERE id=$1 AND usuario_id=$2',[parts[2],usuarioId]);
-        if (!exists.rows.length) return reply(res,404,{error:'Ejemplar no encontrado'});
+        if (!exists.rows.length || !(await canAccess(parts[2]))) return reply(res,404,{error:'Ejemplar no encontrado'});
         const data = await readJSON(req, MAX_BODY_BYTES);
         const photo = data.photo;
         if (!photo || typeof photo !== 'object') return reply(res,400,{error:'Fotografia requerida'});
@@ -201,14 +206,19 @@ module.exports = function createEjemplares(pool) {
       if (req.method === 'GET') {
         if (id) {
           const found = await pool.query('SELECT * FROM ejemplares WHERE id = $1 AND usuario_id = $2', [id, usuarioId]);
-          if (!found.rows.length) return reply(res, 404, { error: 'Ejemplar no encontrado' });
+          if (!found.rows.length || !(await canAccess(id))) return reply(res, 404, { error: 'Ejemplar no encontrado' });
           return reply(res, 200, { status: 'ok', ejemplar: found.rows[0] });
         }
-        const found = await pool.query('SELECT * FROM ejemplares WHERE usuario_id = $1 ORDER BY fecha_registro DESC', [usuarioId]);
-        return reply(res, 200, { status: 'ok', ejemplares: found.rows });
+        const found = await pool.query('SELECT * FROM ejemplares WHERE usuario_id = $1 ORDER BY fecha_registro DESC, id DESC', [usuarioId]);
+        const view=visibleIds(found.rows,req.cryappPlan || 'free');
+        return reply(res, 200, { status: 'ok', ejemplares: view.items, totalRegistros:view.total, registrosOcultos:view.hidden, limiteVisible:view.limit });
       }
 
       if (req.method === 'POST' && !id) {
+        if (free) {
+          const count=await pool.query('SELECT count(*)::int AS total FROM ejemplares WHERE usuario_id=$1',[usuarioId]);
+          if (!canCreate(count.rows[0].total,'free')) return reply(res,403,{error:'Has alcanzado el límite de 25 registros del plan GRATIS',code:'PLAN_LIMIT',limit:25});
+        }
         const data = await readJSON(req);
         const invalid = validateFields(data, true);
         if (invalid) return reply(res, 400, { error: invalid });
@@ -233,10 +243,12 @@ module.exports = function createEjemplares(pool) {
       }
 
       if (req.method === 'DELETE' && id) {
+        if (!(await canAccess(id))) return reply(res,404,{error:'Ejemplar no encontrado'});
         const deleted=await pool.query('DELETE FROM ejemplares WHERE id=$1 AND usuario_id=$2 RETURNING id',[id,usuarioId]);
         return reply(res,deleted.rowCount?200:404,deleted.rowCount?{ok:true}:{error:'Ejemplar no encontrado'});
       }
       if (req.method === 'PATCH' && id) {
+        if (!(await canAccess(id))) return reply(res,404,{error:'Ejemplar no encontrado'});
         const data = await readJSON(req);
         const invalid = validateFields(data, false);
         if (invalid) return reply(res, 400, { error: invalid });
