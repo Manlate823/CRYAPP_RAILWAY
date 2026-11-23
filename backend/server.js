@@ -44,10 +44,6 @@ const server = http.createServer(async (req, res) => {
           res.writeHead(403);
           return res.end(JSON.stringify({error:'Disponible en PRO o CRIADERO',code:'PLAN_REQUIRED',requiredPlan:'pro'}));
         }
-        if (mod==='stats' && plan!=='criadero') {
-          res.writeHead(403);
-          return res.end(JSON.stringify({error:'Estadísticas avanzadas disponibles en CRIADERO',code:'PLAN_REQUIRED',requiredPlan:'criadero'}));
-        }
       }
     } catch(e) {
       res.writeHead(401);
