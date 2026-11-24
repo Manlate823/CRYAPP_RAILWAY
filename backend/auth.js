@@ -32,12 +32,30 @@ function createAuth(pool) {
         }
 
         const hash = await bcrypt.hash(password, 12);
-        const result = await pool.query(
-          `INSERT INTO usuarios (nombre,correo,password_hash)
-           VALUES ($1,$2,$3)
-           RETURNING id,nombre,correo,rol`,
-          [nombre, correo, hash]
-        );
+        // La prueba se concede solo a cuentas recién creadas, en la misma
+        // transacción que el usuario. Requiere migración Railway previa.
+        const client = await pool.connect();
+        let result;
+        try {
+          await client.query('BEGIN');
+          result = await client.query(
+            `INSERT INTO usuarios (nombre,correo,password_hash)
+             VALUES ($1,$2,$3)
+             RETURNING id,nombre,correo,rol`,
+            [nombre, correo, hash]
+          );
+          await client.query(
+            `INSERT INTO cryapp_subscription_trials(user_id,started_at,expires_at)
+             VALUES ($1,now(),now()+interval '30 days')`,
+            [result.rows[0].id]
+          );
+          await client.query('COMMIT');
+        } catch (error) {
+          await client.query('ROLLBACK').catch(()=>{});
+          throw error;
+        } finally {
+          client.release();
+        }
 
         res.writeHead(201);
         return res.end(JSON.stringify({

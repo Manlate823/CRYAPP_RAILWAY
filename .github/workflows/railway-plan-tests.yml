@@ -1,0 +1,27 @@
+name: Railway subscription policy tests
+on:
+  push:
+    branches: [feature/planes-freemium-railway]
+  pull_request:
+    paths:
+      - 'backend/plan-policy.js'
+      - 'backend/plan-access.js'
+      - 'backend/test/**'
+      - '.github/workflows/railway-plan-tests.yml'
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Unit tests (no production DB)
+        run: node --test backend/test/plan-policy.test.js backend/test/plan-access.test.js
+      - name: Syntax checks
+        run: |
+          node --check backend/server.js
+          node --check backend/ejemplares.js
+          node --check backend/subscriptions.js
+          node --check backend/plan-policy.js
+          node --check backend/plan-access.js

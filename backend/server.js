@@ -2,6 +2,8 @@ const createModules = require('./modules');
 const createEjemplares = require('./ejemplares');
 const createAuth = require('./auth');
 const createSubscriptions = require('./subscriptions');
+const {canUseModule} = require('./plan-access');
+const {normalizePlan} = require('./plan-policy');
 const http = require('node:http');
 const fs = require('node:fs');
 const pathModule = require('node:path');
@@ -28,15 +30,25 @@ const server = http.createServer(async (req, res) => {
 
   const path = new URL(req.url, 'http://localhost').pathname;
   if (path.startsWith('/api/subscriptions/')) return subscriptions.handler(req,res);
-  // Restricción real en el servidor: el plan GRATIS no accede a datos de módulos.
-  // Los administradores deben usar la API administrativa separada.
+  // Railway: mercado y mensajes básicos accesibles también en GRATIS.
+  // Las comprobaciones de ejemplares se completan en su controlador.
   if (path.startsWith('/api/modules/') || path === '/api/ejemplares' || path.startsWith('/api/ejemplares/')) {
     try {
       const uid=await subscriptions.identify(req);
       const sub=await subscriptions.membership(uid);
-      if (!sub) {res.writeHead(403);return res.end(JSON.stringify({error:'Necesitas una suscripción PRO o PREMIUM activa',code:'PLAN_REQUIRED',requiredPlan:'pro'}));}
-      if (path.startsWith('/api/modules/stats') && sub.plan_id!=='premium') {res.writeHead(403);return res.end(JSON.stringify({error:'Disponible solo en PREMIUM',code:'PLAN_REQUIRED',requiredPlan:'premium'}));}
-    } catch(e) {res.writeHead(401);return res.end(JSON.stringify({error:'Sesión inválida o cuenta desactivada'}));}
+      const plan=normalizePlan(sub?.plan_id);
+      req.cryappPlan=plan;
+      if (path.startsWith('/api/modules/')) {
+        const mod=path.split('/')[3];
+        if (!canUseModule(mod,plan)) {
+          res.writeHead(403);
+          return res.end(JSON.stringify({error:'Disponible en PRO o CRIADERO',code:'PLAN_REQUIRED',requiredPlan:'pro'}));
+        }
+      }
+    } catch(e) {
+      res.writeHead(401);
+      return res.end(JSON.stringify({error:'Sesión inválida o cuenta desactivada'}));
+    }
   }
   if (path.startsWith('/api/auth/')) {
     const handled = await auth(req, res);
